@@ -1,20 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { schoolUpdateSchema } from "@/lib/validators";
-import { mkdir, stat, writeFile } from "fs/promises";
-import path from "path";
+import { v2 as cloudinary } from "cloudinary";
 
-function sanitizeFilename(name: string) {
-  return name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-}
-async function ensureDir(dirPath: string) {
-  try {
-    const s = await stat(dirPath);
-    if (!s.isDirectory()) throw new Error("Path exists and is not a dir");
-  } catch {
-    await mkdir(dirPath, { recursive: true });
-  }
-}
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 export async function GET(
   _: Request,
@@ -42,13 +36,6 @@ export async function PUT(
   try {
     const { id } = await params;
     const schoolId = Number(id);
-    const contentType = req.headers.get("content-type") || "";
-    if (!contentType.includes("multipart/form-data")) {
-      return NextResponse.json(
-        { error: "Content-Type must be multipart/form-data" },
-        { status: 400 }
-      );
-    }
 
     const formData = await req.formData();
     const payload = {
@@ -65,6 +52,7 @@ export async function PUT(
         ? String(formData.get("emailId"))
         : undefined,
     };
+
     const parsed = schoolUpdateSchema.safeParse(payload);
     if (!parsed.success) {
       return NextResponse.json(
@@ -73,34 +61,36 @@ export async function PUT(
       );
     }
 
-    const imageUpdate: { image?: string } = {};
+    let imageUrl: string | undefined;
     const image = formData.get("image") as File | null;
+
     if (image && image.size > 0) {
       if (!image.type.startsWith("image/")) {
         return NextResponse.json({ error: "Invalid image" }, { status: 400 });
       }
+
       const bytes = Buffer.from(await image.arrayBuffer());
-      if (bytes.length > 5 * 1024 * 1024) {
-        return NextResponse.json(
-          { error: "Image too large (max 5MB)" },
-          { status: 400 }
+
+      imageUrl = await new Promise<string>((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          { folder: "schools" },
+          (err, result) => {
+            if (err) return reject(err);
+            resolve(result?.secure_url || "");
+          }
         );
-      }
-      const uploadDir = path.join(process.cwd(), "public", "schoolImages");
-      await ensureDir(uploadDir);
-      const ext = path.extname(image.name) || ".png";
-      const base = path.basename(image.name, ext);
-      const filename = `${Date.now()}-${sanitizeFilename(base)}${ext}`;
-      await writeFile(path.join(uploadDir, filename), bytes);
-      imageUpdate.image = `/schoolImages/${filename}`;
+        uploadStream.end(bytes);
+      });
     }
 
     const updated = await prisma.school.update({
       where: { id: schoolId },
-      data: { ...parsed.data, ...imageUpdate },
+      data: { ...parsed.data, ...(imageUrl ? { image: imageUrl } : {}) },
     });
+
     return NextResponse.json({ data: updated });
-  } catch {
+  } catch (err) {
+    console.error("Update school error:", err);
     return NextResponse.json(
       { error: "Failed to update school" },
       { status: 500 }
