@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { SchoolForm } from "@/components/school-form";
 import { ArrowLeft, Building2 } from "lucide-react";
 
